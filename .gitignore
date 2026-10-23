@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+.env
+media/
+staticfiles/
+.pytest_cache/
+index_session.py
+
