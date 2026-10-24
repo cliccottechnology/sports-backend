@@ -136,7 +136,10 @@ def decide(frames, roster, owner_by_face, enrolled_keys, consent_keys, cfg=None)
         key = r["student_key"]
         row = {"student_key": key, "name": r["name"], "status": ABSENT,
                "similarity": None, "box": None, "reason_code": "NOT_SEEN"}
-        if key not in enrolled_keys:
+        if faces_detected == 0:
+            # Empty frame: no face was detected in photo; athlete is not marked absent as penalty
+            row.update(status=REVIEW, reason_code="NO_FACES_DETECTED")
+        elif key not in enrolled_keys:
             row.update(status=NOT_ENROLLED, reason_code="NO_FACE_ON_FILE")
         elif key not in consent_keys:
             row.update(status=NO_CONSENT, reason_code="NO_GUARDIAN_CONSENT")

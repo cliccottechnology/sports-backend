@@ -303,8 +303,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             for item in items:
                 sid = item.get("student")
                 st = item.get("status", "present")
-                if st == "needs_review":
-                    st = "not_marked"
                 if sid not in roster_ids:
                     results.append({"student": sid, "error": "not in roster"})
                     continue
@@ -507,9 +505,9 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         evidence.save(update_fields=["provider", "persons_detected"])
 
         is_empty_capture = (result.persons_detected == 0 or getattr(result, "status", None) == "NO_FACES_DETECTED")
-        final_status_code = "SUCCESS"
+        final_status_code = "NO_FACES_DETECTED" if is_empty_capture else "SUCCESS"
         if is_empty_capture:
-            empty_msg = "No faces detected in the photo. Enrolled athletes suggested as absent."
+            empty_msg = "No faces detected in the photo. No attendance has been marked. Please retake the photo with athletes in frame."
             if empty_msg not in result.notes:
                 result.notes.insert(0, empty_msg)
 
@@ -520,7 +518,13 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             link = name_map[s.student_id]
             is_enrolled = s.student_id in with_ref
 
-            if not is_enrolled:
+            if is_empty_capture:
+                # CRITICAL: Empty frame must never mark present OR absent
+                final_suggestion = "needs_review"
+                final_status = "needs_review"
+                final_confidence = None
+                final_reason = "No faces detected in photo. Retake photo with athletes in frame."
+            elif not is_enrolled:
                 final_suggestion = "needs_review"
                 final_status = "needs_review"
                 final_confidence = None
@@ -530,11 +534,11 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 final_status = "present"
                 final_confidence = s.confidence or 0.98
                 final_reason = s.reason or "Auto-matched from group photo."
-            elif s.suggestion == "not_detected" or is_empty_capture:
+            elif s.suggestion == "not_detected":
                 final_suggestion = "not_detected"
                 final_status = "absent"
                 final_confidence = None
-                final_reason = "No enrolled face found in photo (marked absent)."
+                final_reason = "Enrolled athlete not seen in photo (absent candidate)."
             else:
                 final_suggestion = "needs_review"
                 final_status = "needs_review"
@@ -559,49 +563,26 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         total_students = len(suggestions)
 
         # 1-Click auto submit support
-        raw_auto_submit = request.data.get("auto_submit", request.query_params.get("auto_submit", ""))
-        auto_submit = str(raw_auto_submit).lower() in ("true", "1", "yes")
+        auto_submit = str(request.data.get("auto_submit", "")).lower() in ("true", "1")
         submitted = False
         if auto_submit:
             # 1. Reject auto-submit on empty capture: zero-face capture must NOT save attendance
-            # 2. Require at least one verified athlete detected
-            if not is_empty_capture and present_count > 0:
-                present_transitions = []
+            # 2. Reject auto-submit if present_count is 0 or any athlete needs review
+            has_unresolved = any(item["suggestion"] == "needs_review" for item in suggestions)
+            if not is_empty_capture and present_count > 0 and not has_unresolved:
                 with transaction.atomic():
                     for item in suggestions:
                         sid = item["student"]
-                        # Auto-mark: verified -> present; enrolled but not detected -> absent
-                        if item["suggestion"] == "verified":
-                            st = "present"
-                        elif item["suggestion"] == "not_detected" and item["has_reference"]:
-                            st = "absent"
-                        else:
-                            # Athletes without reference photos or with ambiguous match remain for manual review
-                            continue
-
+                        st = "present" if item["suggestion"] == "verified" else "absent"
                         rec, created = AttendanceRecord.objects.get_or_create(
                             session=session, student_id=sid,
                             defaults={"status": st, "marked_by": user}
                         )
                         if not created and rec.status != st:
-                            was_present = rec.status == "present"
                             rec.status = st
                             rec.marked_by = user
                             rec.save(update_fields=["status", "marked_by", "updated_at"])
-                            if st == "present" and not was_present:
-                                present_transitions.append(rec)
-                        elif created and st == "present":
-                            present_transitions.append(rec)
-
-                if present_transitions:
-                    for rec in present_transitions:
-                        rec.session = session
-                        if rec.student_id in name_map:
-                            rec.student = name_map[rec.student_id].student
-                    _notify_parents_present(present_transitions)
-
-                has_unresolved = any(item["suggestion"] == "needs_review" for item in suggestions)
-                if not has_unresolved and session.status in ("scheduled", "in_progress"):
+                if session.status in ("scheduled", "in_progress"):
                     session.status = "completed"
                     session.save(update_fields=["status"])
                 submitted = True
@@ -616,8 +597,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                         notify_users(
                             admins,
                             f"AI Attendance Submitted: {batch_name}",
-                            f"Coach {coach_name} completed AI attendance for {batch_name} ({present_count} present, {absent_count} absent). "
-                            + ("Session marked completed." if not has_unresolved else "Pending review for remaining athletes.")
+                            f"Coach {coach_name} completed AI attendance for {batch_name} ({present_count} present, {total_students - present_count} absent). Session marked completed."
                         )
                 except Exception:
                     pass
@@ -630,7 +610,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         return Response({
             "session": session.pk,
             "status": final_status_code,
-            "message": getattr(result, "message", "") or ("No faces detected in the photo. Enrolled athletes suggested as absent." if is_empty_capture else ""),
+            "message": getattr(result, "message", "") or ("No faces detected. No attendance has been marked. Please retake the photo." if is_empty_capture else ""),
             "photo_id": evidence.pk,
             "photo_url": evidence.image.url if evidence.image else None,
             "provider": result.provider,
