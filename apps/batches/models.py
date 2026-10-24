@@ -11,8 +11,8 @@ class Batch(models.Model):
     coach = models.ForeignKey("coaches.Coach", null=True, on_delete=models.SET_NULL, related_name="batches")
     capacity = models.PositiveIntegerField(null=True, blank=True)  # configurable; enforced when set
     training_days = models.JSONField(default=list, blank=True)  # [0..6]
-    start_time = models.TimeField()
-    end_time = models.TimeField()
+    start_time = models.TimeField(null=True, blank=True)
+    end_time = models.TimeField(null=True, blank=True)
     location = models.ForeignKey("academy.TrainingLocation", null=True, on_delete=models.SET_NULL)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

@@ -12,6 +12,8 @@ class BatchSerializer(serializers.ModelSerializer):
     school_name = serializers.CharField(source="school.name", read_only=True)
     coach_name = serializers.SerializerMethodField()
     students = serializers.SerializerMethodField()
+    start_time = serializers.TimeField(required=False, allow_null=True)
+    end_time = serializers.TimeField(required=False, allow_null=True)
 
     class Meta:
         model = Batch
@@ -86,9 +88,19 @@ class BatchViewSet(GranularPermissions, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         from apps.common.scope import ensure_school
+        from apps.audit.utils import log_audit
         try:
             given = serializer.validated_data.pop("school", None)
-            serializer.save(school_id=ensure_school(self.request, given))
+            batch = serializer.save(school_id=ensure_school(self.request, given))
+            log_audit(self.request, "batch.create", "batches", f"batch:{batch.pk}", new={"name": batch.name})
+        except DjangoValidationError as e:
+            raise serializers.ValidationError(str(e))
+
+    def perform_update(self, serializer):
+        from apps.audit.utils import log_audit
+        try:
+            batch = serializer.save()
+            log_audit(self.request, "batch.update", "batches", f"batch:{batch.pk}", new={"name": batch.name})
         except DjangoValidationError as e:
             raise serializers.ValidationError(str(e))
 

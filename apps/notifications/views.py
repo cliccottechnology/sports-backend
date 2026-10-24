@@ -44,13 +44,25 @@ class NotificationViewSet(GranularPermissions, viewsets.ModelViewSet):
     def get_queryset(self):
         from apps.common.scope import scope_queryset
         user = self.request.user
+        since_id = self.request.query_params.get("since_id")
         if user.is_superuser or (getattr(user, "role", None) and user.role.name in ("super_admin", "academy_admin")):
             qs = scope_queryset(Notification.objects.all(), user, "user__school_id")
             uid = self.request.query_params.get("user")
             if uid:
                 qs = qs.filter(user_id=uid)
+            if since_id:
+                try:
+                    qs = qs.filter(id__gt=int(since_id))
+                except (ValueError, TypeError):
+                    pass
             return qs.order_by("-created_at")
-        return Notification.objects.filter(user=user).order_by("-created_at")
+        qs = Notification.objects.filter(user=user)
+        if since_id:
+            try:
+                qs = qs.filter(id__gt=int(since_id))
+            except (ValueError, TypeError):
+                pass
+        return qs.order_by("-created_at")
 
     @action(detail=True, methods=["post"])
     def read(self, request, pk=None):

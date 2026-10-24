@@ -73,3 +73,38 @@ def users_for_coach(coach):
     """Login accounts linked to a coach profile."""
     from apps.accounts.models import User
     return list(User.objects.filter(is_active=True, coach_profile_id=getattr(coach, "pk", None)))
+
+
+def notify_admins(title, message, school_id=None, dedupe_seconds=10):
+    """Dispatch an in-app notification to all active Super Admins and Academy Admins."""
+    from apps.accounts.models import User
+    from django.db.models import Q
+    from django.utils import timezone
+    from datetime import timedelta
+    from .models import Notification
+
+    try:
+        qs = User.objects.filter(is_active=True).filter(
+            Q(is_superuser=True) | Q(role__name__in=["super_admin", "academy_admin"])
+        )
+        if school_id is not None:
+            qs = qs.filter(
+                Q(school_id=school_id) | Q(school__isnull=True) | Q(is_superuser=True) | Q(role__name="super_admin")
+            )
+        admins = list(qs.distinct())
+        recent = timezone.now() - timedelta(seconds=dedupe_seconds) if dedupe_seconds else None
+
+        for admin in admins:
+            if recent and Notification.objects.filter(
+                user=admin, title=title, message=message, channel="in_app", created_at__gte=recent
+            ).exists():
+                continue
+            Notification.objects.create(
+                user=admin,
+                title=title,
+                message=message,
+                channel="in_app",
+                is_read=False,
+            )
+    except Exception:
+        pass
