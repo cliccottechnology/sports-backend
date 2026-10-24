@@ -151,7 +151,7 @@ class SessionSerializer(serializers.ModelSerializer):
 
 
 class SessionFilter(filters.FilterSet):
-    student = filters.NumberFilter(field_name="assigned__student", label="Assigned student pk")
+    student = filters.NumberFilter(method="filter_student", label="Assigned student pk")
     date__gte = filters.DateFilter(field_name="date", lookup_expr="gte")
     date__lte = filters.DateFilter(field_name="date", lookup_expr="lte")
 
@@ -159,6 +159,13 @@ class SessionFilter(filters.FilterSet):
         model = Session
         fields = ["sport", "batch", "coach", "date", "status", "slot",
                   "student", "date__gte", "date__lte"]
+
+    def filter_student(self, queryset, name, value):
+        from django.db.models import Q
+        return queryset.filter(
+            Q(assigned__student_id=value) |
+            Q(batch__rosters__student_id=value, batch__rosters__is_active=True)
+        ).distinct()
 
 
 def _lock_coach(coach):

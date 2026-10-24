@@ -121,10 +121,49 @@ class StudentSerializer(serializers.ModelSerializer):
     sport_name = serializers.CharField(source="sport.name", read_only=True)
     school_name = serializers.CharField(source="school.name", read_only=True)
     reference_photos = serializers.SerializerMethodField()
+    batch = serializers.SerializerMethodField()
+    batch_name = serializers.SerializerMethodField()
+    batch_details = serializers.SerializerMethodField()
 
     class Meta:
         model = Student
         fields = "__all__"
+
+    def get_batch(self, obj):
+        link = obj.batch_links.filter(is_active=True).first()
+        return link.batch_id if link else None
+
+    def get_batch_name(self, obj):
+        link = obj.batch_links.filter(is_active=True).select_related("batch").first()
+        return link.batch.name if link and link.batch else ""
+
+    def get_batch_details(self, obj):
+        link = obj.batch_links.filter(is_active=True).select_related("batch__sport", "batch__coach", "batch__location").first()
+        if not link or not link.batch:
+            return None
+        b = link.batch
+        coach_name = f"{b.coach.first_name} {b.coach.last_name}".strip() if b.coach else "—"
+        return {
+            "id": b.id,
+            "name": b.name,
+            "sport": b.sport.name if b.sport else "—",
+            "coach": coach_name,
+            "training_days": b.training_days or [],
+            "start_time": str(b.start_time) if b.start_time else "",
+            "end_time": str(b.end_time) if b.end_time else "",
+            "location": b.location.name if b.location else "—",
+            "joined_on": str(link.joined_on),
+        }
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        req = self.context.get("request")
+        if instance.photo and req:
+            try:
+                ret["photo"] = req.build_absolute_uri(instance.photo.url)
+            except Exception:
+                pass
+        return ret
 
     def get_reference_photos(self, obj):
         photos = obj.reference_photos.filter(is_active=True).order_by("created_at")
@@ -164,12 +203,12 @@ class StudentFilter(django_filters.FilterSet):
 
 
 class StudentViewSet(GranularPermissions, viewsets.ModelViewSet):
-    queryset = Student.objects.select_related("sport", "school").prefetch_related("documents").all().order_by("-created_at")
+    queryset = Student.objects.select_related("sport", "school").prefetch_related("documents", "batch_links__batch").all().order_by("-created_at")
     serializer_class = StudentSerializer
     perm_module = "students"
     extra_action_perms = {"summary": "students.view"}
     filterset_class = StudentFilter
-    search_fields = ["student_id", "first_name", "last_name", "phone", "email"]
+    search_fields = ["student_id", "first_name", "last_name", "phone", "email", "batch_links__batch__name", "sport__name"]
     ordering_fields = ["student_id", "enrollment_date", "created_at", "first_name"]
 
     def get_queryset(self):
@@ -191,6 +230,7 @@ class StudentViewSet(GranularPermissions, viewsets.ModelViewSet):
         from apps.common.scope import ensure_school
         given = serializer.validated_data.pop("school", None)
         obj = serializer.save(school_id=ensure_school(self.request, given))
+        self._sync_batch(obj)
         log_audit(self.request, "student.create", "students", f"student:{obj.pk}", new={"student_id": obj.student_id})
 
     def perform_update(self, serializer):
@@ -199,8 +239,27 @@ class StudentViewSet(GranularPermissions, viewsets.ModelViewSet):
             ensure_school(self.request, serializer.validated_data.get("school"))
         old_status = self.get_object().status
         obj = serializer.save()
+        self._sync_batch(obj)
         log_audit(self.request, "student.update", "students", f"student:{obj.pk}",
                   old={"status": old_status}, new={"status": obj.status})
+
+    def _sync_batch(self, student):
+        if "batch" not in self.request.data:
+            return
+        batch_val = self.request.data.get("batch")
+        from apps.batches.models import Batch, BatchStudent
+        if batch_val not in (None, "", "null"):
+            try:
+                b = Batch.objects.get(pk=batch_val)
+                student.batch_links.filter(is_active=True).exclude(batch=b).update(is_active=False)
+                link, _ = BatchStudent.objects.get_or_create(batch=b, student=student, defaults={"is_active": True})
+                if not link.is_active:
+                    link.is_active = True
+                    link.save(update_fields=["is_active"])
+            except (Batch.DoesNotExist, ValueError):
+                pass
+        else:
+            student.batch_links.filter(is_active=True).update(is_active=False)
 
 
 class StudentDocumentViewSet(GranularPermissions, viewsets.ModelViewSet):

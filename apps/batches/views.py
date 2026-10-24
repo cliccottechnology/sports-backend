@@ -11,6 +11,7 @@ class BatchSerializer(serializers.ModelSerializer):
     sport_name = serializers.CharField(source="sport.name", read_only=True)
     school_name = serializers.CharField(source="school.name", read_only=True)
     coach_name = serializers.SerializerMethodField()
+    students = serializers.SerializerMethodField()
 
     class Meta:
         model = Batch
@@ -18,6 +19,23 @@ class BatchSerializer(serializers.ModelSerializer):
 
     def get_student_count(self, obj):
         return obj.rosters.filter(is_active=True).count()
+
+    def get_students(self, obj):
+        links = obj.rosters.filter(is_active=True).select_related("student__sport")
+        return [
+            {
+                "id": link.student_id,
+                "student_id": link.student.student_id,
+                "name": f"{link.student.first_name} {link.student.last_name}".strip(),
+                "first_name": link.student.first_name,
+                "last_name": link.student.last_name,
+                "sport": link.student.sport.name if link.student.sport else (obj.sport.name if obj.sport else "—"),
+                "phone": link.student.phone or "—",
+                "status": link.student.status,
+                "joined_on": str(link.joined_on),
+            }
+            for link in links
+        ]
 
     def get_coach_name(self, obj):
         if obj.coach:
@@ -37,19 +55,30 @@ class BatchSerializer(serializers.ModelSerializer):
 
 
 class BatchStudentSerializer(serializers.ModelSerializer):
-    student_name = serializers.CharField(source="student.first_name", read_only=True)
+    student_name = serializers.SerializerMethodField()
+    student_id = serializers.CharField(source="student.student_id", read_only=True)
+    student_sport = serializers.CharField(source="student.sport.name", read_only=True, default="—")
+    student_phone = serializers.CharField(source="student.phone", read_only=True, default="—")
+    student_status = serializers.CharField(source="student.status", read_only=True, default="active")
+    batch_name = serializers.CharField(source="batch.name", read_only=True)
+    batch_sport = serializers.CharField(source="batch.sport.name", read_only=True)
 
     class Meta:
         model = BatchStudent
         fields = "__all__"
 
+    def get_student_name(self, obj):
+        if obj.student:
+            return f"{obj.student.first_name} {obj.student.last_name}".strip()
+        return "" 
+
 
 class BatchViewSet(GranularPermissions, viewsets.ModelViewSet):
-    queryset = Batch.objects.select_related("sport", "coach", "location", "school").all().order_by("name")
+    queryset = Batch.objects.select_related("sport", "coach", "location", "school").prefetch_related("rosters__student__sport").all().order_by("name")
     serializer_class = BatchSerializer
     perm_module = "batches"
     filterset_fields = ["sport", "coach", "is_active", "location", "school"]
-    search_fields = ["name"]
+    search_fields = ["name", "sport__name", "rosters__student__first_name", "rosters__student__last_name", "rosters__student__student_id"]
 
     def get_queryset(self):
         from apps.common.scope import scope_queryset
@@ -65,11 +94,12 @@ class BatchViewSet(GranularPermissions, viewsets.ModelViewSet):
 
 
 class BatchStudentViewSet(viewsets.ModelViewSet):
-    queryset = BatchStudent.objects.select_related("batch", "student").all()
+    queryset = BatchStudent.objects.select_related("batch__sport", "student__sport").all().order_by("-joined_on", "-id")
     serializer_class = BatchStudentSerializer
     module = "batches"
     permission_classes = [HasPerm("batches.manage")]
     filterset_fields = ["batch", "student", "is_active"]
+    search_fields = ["batch__name", "student__student_id", "student__first_name", "student__last_name", "student__sport__name"]
 
     def get_permissions(self):
         # Roster membership is readable with either side's view right; assigning
