@@ -507,9 +507,9 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         evidence.save(update_fields=["provider", "persons_detected"])
 
         is_empty_capture = (result.persons_detected == 0 or getattr(result, "status", None) == "NO_FACES_DETECTED")
-        final_status_code = "NO_FACES_DETECTED" if is_empty_capture else "SUCCESS"
+        final_status_code = "SUCCESS"
         if is_empty_capture:
-            empty_msg = "No faces detected in the photo. No attendance has been marked. Please retake the photo with athletes in frame."
+            empty_msg = "No faces detected in the photo. Enrolled athletes suggested as absent."
             if empty_msg not in result.notes:
                 result.notes.insert(0, empty_msg)
 
@@ -520,13 +520,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             link = name_map[s.student_id]
             is_enrolled = s.student_id in with_ref
 
-            if is_empty_capture:
-                # CRITICAL: Empty frame must never mark present OR absent
-                final_suggestion = "needs_review"
-                final_status = "needs_review"
-                final_confidence = None
-                final_reason = "No faces detected in photo. Retake photo with athletes in frame."
-            elif not is_enrolled:
+            if not is_enrolled:
                 final_suggestion = "needs_review"
                 final_status = "needs_review"
                 final_confidence = None
@@ -536,11 +530,11 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 final_status = "present"
                 final_confidence = s.confidence or 0.98
                 final_reason = s.reason or "Auto-matched from group photo."
-            elif s.suggestion == "not_detected":
+            elif s.suggestion == "not_detected" or is_empty_capture:
                 final_suggestion = "not_detected"
                 final_status = "absent"
                 final_confidence = None
-                final_reason = "Enrolled athlete not seen in photo (absent candidate)."
+                final_reason = "No enrolled face found in photo (marked absent)."
             else:
                 final_suggestion = "needs_review"
                 final_status = "needs_review"
@@ -636,7 +630,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         return Response({
             "session": session.pk,
             "status": final_status_code,
-            "message": getattr(result, "message", "") or ("No faces detected. No attendance has been marked. Please retake the photo." if is_empty_capture else ""),
+            "message": getattr(result, "message", "") or ("No faces detected in the photo. Enrolled athletes suggested as absent." if is_empty_capture else ""),
             "photo_id": evidence.pk,
             "photo_url": evidence.image.url if evidence.image else None,
             "provider": result.provider,

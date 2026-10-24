@@ -7,4 +7,4 @@ media/
 staticfiles/
 .pytest_cache/
 index_session.py
-
+*.mp4

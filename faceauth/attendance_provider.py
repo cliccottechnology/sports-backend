@@ -87,25 +87,7 @@ class FaceVisionProvider(BaseVisionProvider):
             context["enrolled_keys"], context["consent_keys"],
         )
 
-        # Empty image handling: if no faces detected in the image, fail safe
-        if not observations or decision["faces_detected"] == 0:
-            suggestions = []
-            for key, row in decision["students"].items():
-                suggestions.append(StudentSuggestion(
-                    student_id=int(key),
-                    suggestion="needs_review",
-                    confidence=None,
-                    reason="No faces detected in photo. Please retake photo with athletes clearly visible.",
-                ))
-            return AnalysisResult(
-                provider=self.name,
-                persons_detected=0,
-                suggestions=suggestions,
-                unrecognized_count=0,
-                notes=["No faces were detected in this photo. No attendance has been marked. Please retake the photo."],
-                status="NO_FACES_DETECTED",
-                message="No faces detected in the uploaded photo. No attendance has been marked. Please retake the photo.",
-            )
+
 
         suggestions = []
         names = {}

@@ -178,3 +178,49 @@ def test_photo_analyze_auto_submit_marks_present_and_absent_with_unenrolled_stud
 
     MockFaceProvider.scripted = None
 
+
+@pytest.mark.django_db
+def test_photo_analyze_empty_photo_marks_enrolled_absent(academy_setup, settings):
+    from apps.attendance.models import AttendanceRecord
+    from apps.students.models import StudentReferencePhoto
+    from faceauth.providers import MockFaceProvider
+
+    MockFaceProvider.registry.clear()
+    MockFaceProvider.scripted = []  # No faces detected (empty frame)
+    settings.ATTENDANCE_VISION_PROVIDER = "faceauth"
+    settings.FACE_VERIFICATION_PROVIDER = "mock"
+
+    st1 = academy_setup["st1"]
+    buf = BytesIO()
+    Image.new("RGB", (400, 400), "gray").save(buf, format="JPEG")
+    buf.seek(0)
+    StudentReferencePhoto.objects.create(
+        student=st1, consent_given=True, consented_by="Parent",
+        image=SimpleUploadedFile("ref.jpg", buf.read(), content_type="image/jpeg"),
+    )
+
+    client = APIClient()
+    client.force_authenticate(academy_setup["user"])
+
+    # Without auto_submit: suggestions show enrolled athlete as not_detected / absent
+    r = client.post("/api/attendance/photo_analyze/",
+                    {"session": academy_setup["session"].pk, "photo": _jpeg()},
+                    format="multipart")
+    assert r.status_code == 200, r.content
+    assert r.data["status"] == "SUCCESS"
+    by_id = {s["student"]: s for s in r.data["suggestions"]}
+    assert by_id[st1.pk]["suggestion"] == "not_detected"
+    assert by_id[st1.pk]["status"] == "absent"
+
+    # With auto_submit: enrolled student is saved in DB as absent
+    r_auto = client.post("/api/attendance/photo_analyze/",
+                         {"session": academy_setup["session"].pk, "photo": _jpeg(), "auto_submit": "true"},
+                         format="multipart")
+    assert r_auto.status_code == 200, r_auto.content
+    assert r_auto.data["submitted"] is True
+    rec = AttendanceRecord.objects.get(session=academy_setup["session"], student=st1)
+    assert rec.status == "absent"
+
+    MockFaceProvider.scripted = None
+
+
