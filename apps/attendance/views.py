@@ -522,7 +522,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
             if not is_enrolled:
                 final_suggestion = "needs_review"
-                final_status = "needs_review"
+                final_status = "not_marked"
                 final_confidence = None
                 final_reason = "Not enrolled: no reference photo on file."
             elif s.suggestion == "verified":
@@ -537,7 +537,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 final_reason = "No enrolled face found in photo (marked absent)."
             else:
                 final_suggestion = "needs_review"
-                final_status = "needs_review"
+                final_status = "not_marked"
                 final_confidence = s.confidence
                 final_reason = s.reason or "Confirm presence against group photo."
 
@@ -563,64 +563,63 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         auto_submit = str(raw_auto_submit).lower() in ("true", "1", "yes")
         submitted = False
         if auto_submit:
-            # 1. Reject auto-submit on empty capture: zero-face capture must NOT save attendance
-            # 2. Require at least one verified athlete detected
-            if not is_empty_capture and present_count > 0:
-                present_transitions = []
-                with transaction.atomic():
-                    for item in suggestions:
-                        sid = item["student"]
-                        # Auto-mark: verified -> present; enrolled but not detected -> absent
-                        if item["suggestion"] == "verified":
-                            st = "present"
-                        elif item["suggestion"] == "not_detected" and item["has_reference"]:
-                            st = "absent"
-                        else:
-                            # Athletes without reference photos or with ambiguous match remain for manual review
-                            continue
+            # Auto-submit marks verified athletes as present, enrolled undetected athletes as absent,
+            # and leaves unenrolled athletes not marked (for manual review).
+            present_transitions = []
+            with transaction.atomic():
+                for item in suggestions:
+                    sid = item["student"]
+                    # Auto-mark: verified -> present; enrolled but not detected -> absent
+                    if item["suggestion"] == "verified":
+                        st = "present"
+                    elif item["suggestion"] == "not_detected" and item["has_reference"]:
+                        st = "absent"
+                    else:
+                        # Athletes without reference photos or with ambiguous match remain for manual review
+                        continue
 
-                        rec, created = AttendanceRecord.objects.get_or_create(
-                            session=session, student_id=sid,
-                            defaults={"status": st, "marked_by": user}
-                        )
-                        if not created and rec.status != st:
-                            was_present = rec.status == "present"
-                            rec.status = st
-                            rec.marked_by = user
-                            rec.save(update_fields=["status", "marked_by", "updated_at"])
-                            if st == "present" and not was_present:
-                                present_transitions.append(rec)
-                        elif created and st == "present":
+                    rec, created = AttendanceRecord.objects.get_or_create(
+                        session=session, student_id=sid,
+                        defaults={"status": st, "marked_by": user}
+                    )
+                    if not created and rec.status != st:
+                        was_present = rec.status == "present"
+                        rec.status = st
+                        rec.marked_by = user
+                        rec.save(update_fields=["status", "marked_by", "updated_at"])
+                        if st == "present" and not was_present:
                             present_transitions.append(rec)
+                    elif created and st == "present":
+                        present_transitions.append(rec)
 
-                if present_transitions:
-                    for rec in present_transitions:
-                        rec.session = session
-                        if rec.student_id in name_map:
-                            rec.student = name_map[rec.student_id].student
-                    _notify_parents_present(present_transitions)
+            if present_transitions:
+                for rec in present_transitions:
+                    rec.session = session
+                    if rec.student_id in name_map:
+                        rec.student = name_map[rec.student_id].student
+                _notify_parents_present(present_transitions)
 
-                has_unresolved = any(item["suggestion"] == "needs_review" for item in suggestions)
-                if not has_unresolved and session.status in ("scheduled", "in_progress"):
-                    session.status = "completed"
-                    session.save(update_fields=["status"])
-                submitted = True
+            has_unresolved = any(item["suggestion"] == "needs_review" for item in suggestions)
+            if not has_unresolved and session.status in ("scheduled", "in_progress"):
+                session.status = "completed"
+                session.save(update_fields=["status"])
+            submitted = True
 
-                try:
-                    from apps.notifications.utils import admin_recipients, notify_users
-                    school_id = session.batch.school_id if session.batch_id else None
-                    admins = admin_recipients(school_id=school_id)
-                    if admins:
-                        coach_name = user.get_full_name() or user.username
-                        batch_name = session.batch.name if session.batch else f"Session #{session.pk}"
-                        notify_users(
-                            admins,
-                            f"AI Attendance Submitted: {batch_name}",
-                            f"Coach {coach_name} completed AI attendance for {batch_name} ({present_count} present, {absent_count} absent). "
-                            + ("Session marked completed." if not has_unresolved else "Pending review for remaining athletes.")
-                        )
-                except Exception:
-                    pass
+            try:
+                from apps.notifications.utils import admin_recipients, notify_users
+                school_id = session.batch.school_id if session.batch_id else None
+                admins = admin_recipients(school_id=school_id)
+                if admins:
+                    coach_name = user.get_full_name() or user.username
+                    batch_name = session.batch.name if session.batch else f"Session #{session.pk}"
+                    notify_users(
+                        admins,
+                        f"AI Attendance Submitted: {batch_name}",
+                        f"Coach {coach_name} completed AI attendance for {batch_name} ({present_count} present, {absent_count} absent). "
+                        + ("Session marked completed." if not has_unresolved else "Pending review for remaining athletes.")
+                    )
+            except Exception:
+                pass
 
         notes = result.notes + quality_notes
         if dup_of:

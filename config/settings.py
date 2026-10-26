@@ -237,7 +237,7 @@ LOGGING = {
 # Never treated as verified unless a real provider confirms.
 # =====================================================
  
-FACE_VERIFICATION_PROVIDER = os.getenv("FACE_VERIFICATION_PROVIDER", "none")
+FACE_VERIFICATION_PROVIDER = os.getenv("FACE_VERIFICATION_PROVIDER", "aws")
 FACE_MATCH_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "90"))
 FACE_REKOGNITION_COLLECTION_ID = os.getenv(
     "FACE_REKOGNITION_COLLECTION_ID", "cliccot-faces"
